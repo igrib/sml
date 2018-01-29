@@ -18,14 +18,12 @@ void setup()
  	pinMode(EM_PWM_PIN, OUTPUT);
 	analogReference(DEFAULT); // Use 5V as reference for A2D
 	
-
 	Serial.begin(115200);
 	
 	initTimerInterrupt();
 	initPWM();
 	setPWM(0); //Turn off current to EM
 }
-
 void loop() 
 {
 	parser(); 
@@ -47,14 +45,9 @@ void initPWM()
     TCCR2B = 0;
 	TCCR2B = (1<<2); //Waveform generation - Fast PWM;
     OCR2A = 0;
-
-	
-
-
 }
 void initTimerInterrupt()
 {
-	
 	/***********************************************
 	*void initTimerInterrupt()
 	*Input: none
@@ -82,19 +75,25 @@ ISR(TIMER1_COMPA_vect)
 	*Output:none
 	*Description: Called every time TCNT1
 	*			  matches ORCA1 in our
-	*			  case it is every 10mS
+	*			  case it is every 2.5mS
 	*             
 	***********************************************/
-
-	
+	//printSensors();	
 }
-
-
 void parser()
 {
+	/***********************************************
+	*void parser()
+	*Intput:none
+	*Output:none
+	*Description: User command parser
+	*             
+	***********************************************/
+	
     p("Select Command");
 	p("[d] - Set PWM Duty Cycle");
-	p("[c] - Continuously read current sensor");
+	p("[c] - Continuously read hall and current sensor");
+	p("[q] - Characterize pwm vs hall vs current sensor");
     char ch = Serial.read();
 
     while (ch == -1)
@@ -112,10 +111,14 @@ void parser()
         }
 		case ('c'):
 		{
-			readCurrentSensor();
+			readSensors();
 			break;
 		}
-		
+		case ('q'):
+		{
+			characterizeSensors();
+			break;
+		}
         default:
         {
         	p("Bad command");
@@ -123,41 +126,147 @@ void parser()
         }
     }
 }
-void readCurrentSensor()
+void characterizeSensors()
+{
+	/***********************************************
+	*void characterizeSensors()
+	*Intput:none
+	*Output:none
+	*Description: Step through PWM values from 0-255
+	*			  read hall and  current sensors
+	*			  output all 3 values
+	* 			              
+	***********************************************/
+
+	p("Timestamp\tPWM\tCurrent\tHall\tNormalized Hall");
+	for(int pwmValue=0;pwmValue<255;pwmValue++)
+    {		
+		long timeStamp=millis();
+		setPWM(pwmValue);
+		int currentValue = analogRead(CURRENT_SENSOR_PIN);
+		int hallValue = analogRead(HALL_SENSOR_PIN);
+		int normalizedHallValue=readHallSensorNormalized();
+		Serial.print(timeStamp);
+		Serial.print("\t");
+		Serial.print(pwmValue);
+		Serial.print("\t");
+		Serial.print(currentValue);
+		Serial.print("\t");
+		Serial.print(hallValue);
+		Serial.print("\t");
+		Serial.println(normalizedHallValue);		
+	}
+	setPWM(0);
+	
+	//TODO Write characterize fucntion to calculate m and b to normalize hall sensor reading
+}
+void printSensors()
+{
+	/***********************************************
+	*void printSensors()
+	*Intput:none
+	*Output:none
+	*Description: Print sensor reading to screen
+	* 			              
+	***********************************************/
+	long timeStamp=millis();
+	int currentValue = analogRead(CURRENT_SENSOR_PIN);
+	int hallValue = analogRead(HALL_SENSOR_PIN);
+	int normalizedHallValue=readHallSensorNormalized();
+	Serial.print(timeStamp);
+	Serial.print("\t");
+	Serial.print(currentValue);
+	Serial.print("\t");
+	Serial.println(hallValue);
+	Serial.print("\t");
+	Serial.println(normalizedHallValue);
+}
+void readSensors()
 {
 	char ch;
+	
+	p("Current\tHall\tHall Normalized");
     while (ch != 'e')
     {
-		
-		int currentValue = analogRead(CURRENT_SENSOR_PIN);
-		pp("Current Value: ",currentValue);
+			
+		int currentValue = readCurrentSensor();
+		int hallValue = readHallSensorRaw();
+		int hallValueNormalized=readHallSensorNormalized();
+		Serial.print(currentValue);
+		Serial.print("\t");
+		Serial.print(hallValue);
+		Serial.print("\t");		
+		Serial.println(hallValueNormalized);
         if (Serial.available())
         {
              ch = Serial.read();
         }
 	 }
 }
-int readHallSensor()
+int readCurrentSensor()
 {
-/*
- * unsigned int readHallSensor()
- * Input: None
- * Output: unsigned int (16 bit 0-65535) value of the hall sensor
- * Reads the hall sensor A2D and averages a few values to clean up noise
- */
-#define AVERAGE_SIZE 10
-         double reading[AVERAGE_SIZE];
-         double average = 0;
+	return analogRead(CURRENT_SENSOR_PIN);
 
-         for (uint8_t i = 0; i < AVERAGE_SIZE; i++)
-         {
-                  // ADC Conversion complete
-                  reading[i] = analogRead(HALL_SENSOR_PIN);
-                  average += reading[i];
-                  // delay(1);
-         }
-         average = average / AVERAGE_SIZE;
-         return (int)average;
+}
+int readHallSensorRaw()
+{
+	/*
+	 * unsigned int readHallSensorRaw()
+	 * Input: None
+	 * Output: unsigned int (16 bit 0-65535) value of the hall sensor
+	 * Reads the hall sensor A2D and averages a few values to clean up noise
+	 */
+	#define AVERAGE_SIZE 10
+    double reading[AVERAGE_SIZE];
+    double average = 0;
+
+    for (uint8_t i = 0; i < AVERAGE_SIZE; i++)
+    {
+      // ADC Conversion complete
+      average += analogRead(HALL_SENSOR_PIN);
+    }
+    average = average / AVERAGE_SIZE;
+    return (int)average;
+}
+int readHallSensorNormalized()
+{
+   /*
+    * unsigned int readHallSensorNormalized()
+    * Input: None
+    * Output: unsigned int (16 bit 0-65535) value of the hall sensor normalized
+    * Takes the raw reading of the hall sensor and removes the effect
+	* of the electromagnet. 
+	* Calculate the impact of the electromagnet based on the current sensor
+	* and subtract it out.
+    */	
+	
+	
+	//These aret he values for our lines
+	float m=0.297; //Slope of the current vs hall
+	float b=487; //Intercept of the current vs hall
+	
+	float currentValue=(float)readCurrentSensor();
+	float rawHallValue=(float)readHallSensorRaw();
+	float normalizedValue = ( m * currentValue+b); //Calculate what hall sensor should be based on current sensor
+	
+	normalizedValue=rawHallValue-normalizedValue; 
+	
+	// Serial.print("\t");
+	// Serial.print(rawHallValue);
+	// Serial.print("\t");
+	// Serial.print(currentValue);
+	// Serial.print("\t");
+	// Serial.print(normalizedValue);
+	
+	
+	
+	//Check that we are in reasonable bounds and if not flatten
+	if(normalizedValue<0)
+		normalizedValue = 0;
+	if(normalizedValue>1024)
+		normalizedValue=1024;
+	
+	return (int)normalizedValue;
 }
 void setDutyCycle()
 {
